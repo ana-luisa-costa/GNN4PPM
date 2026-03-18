@@ -1,0 +1,70 @@
+
+## Overview
+
+GNN4PPM is a pipeline that combines RDF graph embeddings with relational graph neural networks to predict process attributes and supports the publication "GNN4PPM: Multi-Target Predictive Process Moni-
+toring with Relational Graph Convolutional Networks".
+
+## Setup
+
+### Prerequisites
+
+- Python 3.9+
+- Virtual environment
+
+### Installation
+
+1. Create and activate the virtual environment:
+```bash
+python3 -m venv myenv
+source myenv/bin/activate
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+
+### Running the Full Pipeline
+
+Run `main.py` for a specified dataset.
+
+#### Basic Usage
+
+```bash
+python main.py BPIC13_O
+```
+
+This runs all three steps (build → train → evaluate) sequentially for the BPIC13_O dataset.
+
+#### Available Datasets
+
+- BPIC12_A
+- BPIC12_W
+- BPIC12_WC
+- BPIC13_O
+- BPIC17_O
+- BPIC20_P
+- BPIC20_R
+
+
+## Data Structure
+
+The pipeline expects datasets to be organized as:
+
+```
+data/raw/{DATASET}/
+├── {DATASET}.ttl          # RDF graph in Turtle format
+├── {DATASET}.csv          # Preprocessed event log
+└── (generated files after build)
+    ├── case_split.json
+    ├── entity2id.json
+    └── entity_embeddings.npy
+
+data/processed/{DATASET}/
+└── (generated files after pipeline)
+    ├── best_val.pt
+    ├── best_val_vocabs.json
+    └── evaluation.txt
+```

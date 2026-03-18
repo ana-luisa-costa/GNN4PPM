@@ -1,0 +1,24 @@
+# environments
+myenv/
+venv/
+.venv/
+
+# python
+__pycache__/
+*.pyc
+
+# data & outputs
+data/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.pkl
+*.csv
+*.parquet
+*.npz
+
+# misc
+.DS_Store
+logs/
+*.out
