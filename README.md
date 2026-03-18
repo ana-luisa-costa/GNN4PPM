@@ -28,15 +28,11 @@ pip install -r requirements.txt
 
 ### Running the Full Pipeline
 
-Run `main.py` for a specified dataset.
-
-#### Basic Usage
+Run `main.py` for a specified dataset, such as for BPIC13_O.
 
 ```bash
 python main.py BPIC13_O
 ```
-
-This runs all three steps (build → train → evaluate) sequentially for the BPIC13_O dataset.
 
 #### Available Datasets
 
