@@ -1,0 +1,370 @@
+prefixes:
+  ex: "http://example.org/"
+  caseID: "http://caseID.org/"
+  caseOtherC: "http://caseOtherC.org/"
+  caseOtherN: "http://caseOtherN.org/"
+  eventID: "http://eventID.org/"
+  eventActivity: "http://eventActivity.org/"
+  eventOtherC: "http://eventOtherC.org/"
+  eventOtherN: "http://eventOtherN.org/"
+  eventTimestamp: "http://eventTimestamp.org/"
+  rdf: "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  ql: "http://semweb.mmlab.be/ns/ql#"
+  xsd: "http://www.w3.org/2001/XMLSchema#"
+
+mappings:
+
+  # ========= Core instance nodes =========
+  caseID:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT
+            caseid_case_concept_name,
+            case_otherc_organizationcountry,
+            case_otherc_impact,
+            case_othern_product,
+            eventid
+          FROM public.BPIC13_OpenProblems_stage
+    s: "caseID:$(caseid_case_concept_name)"
+    po:
+      - [ rdf:type, caseID:caseID~iri ]
+      - [ ex:hascase_otherC_organizationcountry, caseOtherC:$(case_otherc_organizationcountry~iri) ]
+      - [ ex:hascase_otherC_impact,              caseOtherC:$(case_otherc_impact~iri) ]
+      - [ ex:contains,                           eventID:$(eventid~iri) ]
+      - p: ex:hascase_otherN_product
+        o: $(case_othern_product)
+        datatype: xsd:string
+
+  eventID:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT
+            eventid,
+            event_otherc_org_group,
+            event_otherc_resourcecountry,
+            event_otherc_org_resource,
+            event_otherc_org_role,
+            event_activity_concept_name,
+            event_timestamp_time_timestamp,
+            event_otherc_lifecycle_transition,
+            caseid_case_concept_name
+          FROM public.BPIC13_OpenProblems_stage
+    s: "eventID:$(eventid)"
+    po:
+      - [ rdf:type,                              eventID:eventID~iri ]
+      - [ ex:hasevent_otherC_org_group,          eventOtherC:$(event_otherc_org_group~iri) ]
+      - [ ex:hasevent_otherC_resourcecountry,    eventOtherC:$(event_otherc_resourcecountry~iri) ]
+      - [ ex:hasevent_otherC_org_resource,       eventOtherC:$(event_otherc_org_resource~iri) ]
+      - [ ex:hasevent_otherC_org_role,           eventOtherC:$(event_otherc_org_role~iri) ]
+      - [ ex:hasevent_activity_concept_name,     eventActivity:$(event_activity_concept_name~iri) ]
+      - [ ex:hasevent_otherC_lifecycle_transition, eventOtherC:$(event_otherc_lifecycle_transition~iri) ]
+      - [ ex:hascaseID_case_concept_name,        caseID:$(caseid_case_concept_name~iri) ]
+      - p: ex:hasevent_timestamp_time_timestamp
+        o: $(event_timestamp_time_timestamp)
+        datatype: xsd:string
+
+  # ========= Type assertions for value nodes =========
+  type_activity_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT event_activity_concept_name AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE event_activity_concept_name IS NOT NULL
+    s: "http://eventActivity.org/$(v)"
+    po:
+      - [ rdf:type, ex:Activity~iri ]
+
+  type_lifecycle_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT event_otherc_lifecycle_transition AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE event_otherc_lifecycle_transition IS NOT NULL
+    s: "http://eventOtherC.org/$(v)"
+    po:
+      - [ rdf:type, ex:LifecycleTransition~iri ]
+
+  type_org_group_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT event_otherc_org_group AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE event_otherc_org_group IS NOT NULL
+    s: "http://eventOtherC.org/$(v)"
+    po:
+      - [ rdf:type, ex:OrgGroup~iri ]
+
+  type_resource_country_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT event_otherc_resourcecountry AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE event_otherc_resourcecountry IS NOT NULL
+    s: "http://eventOtherC.org/$(v)"
+    po:
+      - [ rdf:type, ex:ResourceCountry~iri ]
+
+  type_org_resource_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT event_otherc_org_resource AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE event_otherc_org_resource IS NOT NULL
+    s: "http://eventOtherC.org/$(v)"
+    po:
+      - [ rdf:type, ex:OrgResource~iri ]
+
+  type_org_role_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT event_otherc_org_role AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE event_otherc_org_role IS NOT NULL
+    s: "http://eventOtherC.org/$(v)"
+    po:
+      - [ rdf:type, ex:OrgRole~iri ]
+
+  type_timestamp_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT event_timestamp_time_timestamp AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE event_timestamp_time_timestamp IS NOT NULL
+    s: "http://eventTimestamp.org/$(v)"
+    po:
+      - [ rdf:type, ex:Timestamp~iri ]
+
+  type_case_org_country_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT case_otherc_organizationcountry AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE case_otherc_organizationcountry IS NOT NULL
+    s: "http://caseOtherC.org/$(v)"
+    po:
+      - [ rdf:type, ex:CaseOrganizationCountry~iri ]
+
+  type_impact_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT case_otherc_impact AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE case_otherc_impact IS NOT NULL
+    s: "http://caseOtherC.org/$(v)"
+    po:
+      - [ rdf:type, ex:Impact~iri ]
+
+  type_product_values:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          SELECT DISTINCT case_othern_product AS v
+          FROM public.BPIC13_OpenProblems_stage
+          WHERE case_othern_product IS NOT NULL
+    s: "http://caseOtherN.org/$(v)"
+    po:
+      - [ rdf:type, ex:Product~iri ]
+
+  # ========= Directly-follows for event-* attributes (CSV order) =========
+  follows_event_activity:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          WITH base AS (
+            SELECT csv_pos, NULLIF(BTRIM(event_activity_concept_name), '') AS v
+            FROM public.BPIC13_OpenProblems_stage
+          ),
+          ordered AS (
+            SELECT v AS curr_val, LEAD(v) OVER (ORDER BY csv_pos) AS next_val
+            FROM base
+          )
+          SELECT * FROM ordered
+          WHERE next_val IS NOT NULL AND curr_val IS NOT NULL
+    s: eventActivity:$(curr_val)
+    po:
+      - [ ex:directlyFollows, eventActivity:$(next_val~iri) ]
+
+  follows_event_otherc_lifecycle_transition:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          WITH ordered AS (
+            SELECT
+              NULLIF(BTRIM(event_otherc_lifecycle_transition), '') AS curr_val,
+              LEAD(NULLIF(BTRIM(event_otherc_lifecycle_transition), '')) OVER (ORDER BY csv_pos) AS next_val
+            FROM public.BPIC13_OpenProblems_stage
+          )
+          SELECT * FROM ordered
+          WHERE next_val IS NOT NULL AND curr_val IS NOT NULL
+    s: eventOtherC:$(curr_val)
+    po:
+      - [ ex:directlyFollows, eventOtherC:$(next_val~iri) ]
+
+  follows_event_otherc_org_group:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          WITH ordered AS (
+            SELECT
+              NULLIF(BTRIM(event_otherc_org_group), '') AS curr_val,
+              LEAD(NULLIF(BTRIM(event_otherc_org_group), '')) OVER (ORDER BY csv_pos) AS next_val
+            FROM public.BPIC13_OpenProblems_stage
+          )
+          SELECT * FROM ordered
+          WHERE next_val IS NOT NULL AND curr_val IS NOT NULL
+    s: eventOtherC:$(curr_val)
+    po:
+      - [ ex:directlyFollows, eventOtherC:$(next_val~iri) ]
+
+  follows_event_otherc_org_resource:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          WITH ordered AS (
+            SELECT
+              NULLIF(BTRIM(event_otherc_org_resource), '') AS curr_val,
+              LEAD(NULLIF(BTRIM(event_otherc_org_resource), '')) OVER (ORDER BY csv_pos) AS next_val
+            FROM public.BPIC13_OpenProblems_stage
+          )
+          SELECT * FROM ordered
+          WHERE next_val IS NOT NULL AND curr_val IS NOT NULL
+    s: eventOtherC:$(curr_val)
+    po:
+      - [ ex:directlyFollows, eventOtherC:$(next_val~iri) ]
+
+  follows_event_otherc_org_role:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          WITH ordered AS (
+            SELECT
+              NULLIF(BTRIM(event_otherc_org_role), '') AS curr_val,
+              LEAD(NULLIF(BTRIM(event_otherc_org_role), '')) OVER (ORDER BY csv_pos) AS next_val
+            FROM public.BPIC13_OpenProblems_stage
+          )
+          SELECT * FROM ordered
+          WHERE next_val IS NOT NULL AND curr_val IS NOT NULL
+    s: eventOtherC:$(curr_val)
+    po:
+      - [ ex:directlyFollows, eventOtherC:$(next_val~iri) ]
+
+  follows_event_otherc_resourcecountry:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          WITH ordered AS (
+            SELECT
+              NULLIF(BTRIM(event_otherc_resourcecountry), '') AS curr_val,
+              LEAD(NULLIF(BTRIM(event_otherc_resourcecountry), '')) OVER (ORDER BY csv_pos) AS next_val
+            FROM public.BPIC13_OpenProblems_stage
+          )
+          SELECT * FROM ordered
+          WHERE next_val IS NOT NULL AND curr_val IS NOT NULL
+    s: eventOtherC:$(curr_val)
+    po:
+      - [ ex:directlyFollows, eventOtherC:$(next_val~iri) ]
+
+  follows_event_timestamp_time_timestamp:
+    sources:
+      - access: "jdbc:postgresql://localhost:5432/bpic12?user=postgres&password=password"
+        type: postgresql
+        credentials: { username: postgres, password: password }
+        referenceFormulation: csv
+        queryFormulation: postgresql
+        query: |
+          WITH ordered AS (
+            SELECT
+              NULLIF(BTRIM(event_timestamp_time_timestamp), '') AS curr_val,
+              LEAD(NULLIF(BTRIM(event_timestamp_time_timestamp), '')) OVER (ORDER BY csv_pos) AS next_val
+            FROM public.BPIC13_OpenProblems_stage
+          )
+          SELECT * FROM ordered
+          WHERE next_val IS NOT NULL AND curr_val IS NOT NULL
+    s: eventTimestamp:$(curr_val)
+    po:
+    - p: ex:directlyFollows
+      o: $(next_val)
+      datatype: xsd:string

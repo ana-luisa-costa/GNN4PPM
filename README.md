@@ -44,6 +44,17 @@ python main.py BPIC13_O
 - BPIC20_P
 - BPIC20_R
 
+### KG Construction (YARRRML -> RML -> RDF)
+
+RDF graphs can be generated from the dataset-specific YARRRML mappings in `kg-construction/`.
+
+- Full instructions: `kg-construction/README.md`
+- Includes workflow for:
+    - loading CSV files into PostgreSQL,
+    - parsing YARRRML into RML,
+    - executing RMLMapper to generate `.ttl` RDF files.
+- Dataset folders also include named helper scripts (`.sh` and `.bat`) to run parsing and mapping in one step.
+
 
 ## Data Structure
 
