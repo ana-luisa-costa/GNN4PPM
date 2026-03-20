@@ -7,7 +7,6 @@ GNN4PPM is a pipeline that combines RDF graph embeddings with relational graph n
 
 ### Prerequisites
 
-- Python 3.9+
 - Virtual environment
 - Recommended Python version: 3.13.12
 
@@ -26,6 +25,11 @@ pip install -r requirements.txt
 
 ## Usage
 
+### Data
+
+Download the data file from: https://figshare.com/s/cde2c35c6ab3f7ca5422, and add the folder to GNN4PPM. 
+For reproducibility, we share all information about the datasets BPIC12_A, BPIC12_W, BPIC12_WC, BPIC13_O, BPIC17_O, BPIC20_P, and BPIC20_R.
+
 ### Running the Full Pipeline
 
 Run `main.py` for a specified dataset, such as for BPIC13_O.
@@ -33,10 +37,6 @@ Run `main.py` for a specified dataset, such as for BPIC13_O.
 ```bash
 python main.py BPIC13_O
 ```
-
-#### Data
-
-Please download the data file from: https://figshare.com/s/cde2c35c6ab3f7ca5422, and add the folder to GNN4PPM. For reproducibility, we share all information about the datasets BPIC12_A, BPIC12_W, BPIC12_WC, BPIC13_O, BPIC17_O, BPIC20_P, and BPIC20_R.
 
 ### KG Construction (YARRRML -> RML -> RDF)
 
@@ -50,7 +50,7 @@ RDF graphs can be generated from the dataset-specific YARRRML mappings in `kg-co
 - Dataset folders also include named helper scripts (`.sh` and `.bat`) to run parsing and mapping in one step.
 
 
-## Data Structure
+### Data Structure
 
 The pipeline expects datasets to be organized as:
 
