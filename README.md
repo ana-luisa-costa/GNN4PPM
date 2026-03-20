@@ -8,7 +8,7 @@ GNN4PPM is a pipeline that combines RDF graph embeddings with relational graph n
 ### Prerequisites
 
 - Virtual environment
-- Recommended Python version: 3.13.12
+- Recommended Python version: 3.9.6
 
 ### Installation
 
