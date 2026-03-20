@@ -1,8 +1,7 @@
 
 ## Overview
 
-GNN4PPM is a pipeline that combines RDF graph embeddings with relational graph neural networks to predict process attributes and supports the publication "GNN4PPM: Multi-Target Predictive Process Moni-
-toring with Relational Graph Convolutional Networks".
+GNN4PPM is a pipeline that combines RDF graph embeddings with relational graph neural networks to predict process attributes and supports the publication "GNN4PPM: Multi-Target Predictive Process Monitoring with Relational Graph Convolutional Networks".
 
 ## Setup
 
@@ -10,6 +9,7 @@ toring with Relational Graph Convolutional Networks".
 
 - Python 3.9+
 - Virtual environment
+- Recommended Python version: 3.13.12
 
 ### Installation
 
