@@ -34,15 +34,9 @@ Run `main.py` for a specified dataset, such as for BPIC13_O.
 python main.py BPIC13_O
 ```
 
-#### Available Datasets
+#### Data
 
-- BPIC12_A
-- BPIC12_W
-- BPIC12_WC
-- BPIC13_O
-- BPIC17_O
-- BPIC20_P
-- BPIC20_R
+Please download the data file from: https://figshare.com/s/cde2c35c6ab3f7ca5422, and add the folder to GNN4PPM. For reproducibility, we share all information about the datasets BPIC12_A, BPIC12_W, BPIC12_WC, BPIC13_O, BPIC17_O, BPIC20_P, and BPIC20_R.
 
 ### KG Construction (YARRRML -> RML -> RDF)
 
