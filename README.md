@@ -35,7 +35,7 @@ For reproducibility, we share all information about the datasets BPIC12_A, BPIC1
 Run `main.py` for a specified dataset, such as for BPIC13_O.
 
 ```bash
-python main.py BPIC13_O
+python3 main.py BPIC13_O
 ```
 
 ### KG Construction (YARRRML -> RML -> RDF)
