@@ -205,15 +205,18 @@ def objective(trial, data, args):
         list(encoder.parameters()) + list(head.parameters()), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.optuna_epochs)
 
-    train_idx = torch.arange(n_train, device=device)
-    val_idx   = torch.arange(n_train, n_train + len(val_pairs_t), device=device)
+    n_inner = int(0.8 * len(train_pairs_t))
+    inner_train_t = train_pairs_t[:n_inner]
+    inner_val_t   = train_pairs_t[n_inner:]
+    train_idx = torch.arange(n_inner, device=device)
+    val_idx   = torch.arange(n_inner, len(train_pairs_t), device=device)
     best_v = float("inf")
 
     for epoch in range(args.optuna_epochs):
         encoder.train(); head.train()
         optimizer.zero_grad()
         z   = encoder(x, ei_tr, et_tr)
-        out = head(z[train_pairs_t[:, 0]])
+        out = head(z[inner_train_t[:, 0]])
         loss = compute_loss(out, y_act, y_time, y_c, y_n, train_idx, time_weight, act_weight, otherC_weights, otherC_weight_factor, otherN_weight_factor)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(list(encoder.parameters()) + list(head.parameters()), max_norm=1.0)
@@ -221,8 +224,8 @@ def objective(trial, data, args):
 
         encoder.eval(); head.eval()
         with torch.no_grad():
-            z_v  = encoder(x, ei_val, et_val)
-            v_out = head(z_v[val_pairs_t[:, 0]])
+            z_v  = encoder(x, ei_tr, et_tr)
+            v_out = head(z_v[inner_val_t[:, 0]])
             m_act = y_act[val_idx] >= 0
             if m_act.any():
                 v_loss = F.cross_entropy(v_out["act"][m_act], y_act[val_idx][m_act], weight=act_weight)
