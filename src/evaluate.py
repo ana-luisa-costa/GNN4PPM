@@ -1,4 +1,3 @@
-
 import argparse
 import json
 from typing import Dict, Optional
@@ -85,7 +84,7 @@ def main():
     act_pred = act_logits.argmax(dim=-1)
 
     N_val = y_act.size(0)
-    print(f"Evaluating {N_val} validation pairs …")
+    print(f"Evaluating {N_val} test pairs …")
 
     act_vocab = None   
     id2act    = None   
@@ -96,7 +95,7 @@ def main():
 
     id2ent = load_id2ent(args.entity2id) if args.entity2id else None
 
-    lines = [f"Validation set — {N_val} pairs\n"]
+    lines = [f"Test set — {N_val} pairs\n"]
 
     act_m = cls_metrics(y_act, act_pred)
     lines.append("== Activity (next-event classification) ==")
@@ -126,7 +125,7 @@ def main():
         pairs_val = d["pairs_val"]   # (N_val, 2) node IDs
         known_mask = (y_act >= 0).nonzero(as_tuple=True)[0]
         show_n = min(args.show_examples, len(known_mask))
-        lines.append(f"\n== Examples (first {show_n} non-UNK validation pairs) ==")
+        lines.append(f"\n== Examples (first {show_n} non-UNK test pairs) ==")
         for idx in known_mask[:show_n].tolist():
             src_id = int(pairs_val[idx, 0].item())
             dst_id = int(pairs_val[idx, 1].item())

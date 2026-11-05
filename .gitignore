@@ -9,6 +9,7 @@ __pycache__/
 
 # data & outputs
 data/
+data_original/
 data.zip
 *.pt
 *.pth

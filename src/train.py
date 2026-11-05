@@ -1,37 +1,21 @@
-import re
 import json
 import os
 import argparse
 from typing import Dict, List, Tuple, Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import optuna
-from datetime import datetime, timezone
 from rdflib import Graph, URIRef
 from torch_geometric.nn import RGCNConv
 
-from src.utils.uri_helpers import get_case_of_entity, EVENT_RE, CASE_RE
+from src.utils.uri_helpers import EVENT_RE, P_TIME, parse_ts, order_case_events
 from src.utils.io_helpers import load_entity2id, load_embeddings, load_case_split
 
 
 P_ACT  = "http://example.org/hasevent_activity_concept_name"
-P_TIME = "http://example.org/hasevent_timestamp_time_timestamp"
-
-
-def parse_ts(ts: str) -> Optional[float]:
-    ts = str(ts).strip()
-    if len(ts) < 14 or not ts[:14].isdigit():
-        return None
-    try:
-        dt = datetime.strptime(ts[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-        frac = ts[14:]
-        frac_sec = (int(frac) / (10 ** len(frac))) if (frac and frac.isdigit()) else 0.0
-        return dt.timestamp() + frac_sec
-    except Exception:
-        return None
+P_FOLLOWS = "http://example.org/eventDirectlyFollows"  
 
 
 def get_event_attrs(g, event_uri: str):
@@ -57,9 +41,16 @@ def add_inverse_edges(ei: torch.Tensor, et: torch.Tensor, num_rel: int):
             torch.cat([et, et + num_rel]))
 
 
-def build_graph(g, ent2id: Dict[str, int], rel2id: Dict[str, int],
-                excluded_cases: Optional[set] = None):
-    src_list, dst_list, rel_list = [], [], []
+def collect_case_triples(g, ent2id: Dict[str, int], rel2id: Dict[str, int],
+                         case_map: Dict[str, List[int]]):
+    """Group triples by case, keeping only those that touch an event node.
+
+    Value-to-value triples (e.g. directlyFollows between shared attribute
+    nodes) are dropped: they connect events across cases and across time.
+    """
+    case_of_node = {nid: cid for cid, events in case_map.items() for nid in events}
+
+    triples_by_case: Dict[str, List[Tuple[int, int, int]]] = {}
     for s, p, o in g:
         ps = str(p)
         if "rdf-schema" in ps or ps.endswith("#type"):
@@ -67,21 +58,73 @@ def build_graph(g, ent2id: Dict[str, int], rel2id: Dict[str, int],
         s_str, o_str = str(s), str(o)
         if s_str not in ent2id or o_str not in ent2id:
             continue
-        if excluded_cases is not None:
-            s_case = get_case_of_entity(s_str)
-            o_case = get_case_of_entity(o_str)
-            if ((s_case is not None and s_case in excluded_cases) or
-                (o_case is not None and o_case in excluded_cases)):
-                continue
+        s_id, o_id = ent2id[s_str], ent2id[o_str]
+        cid = case_of_node.get(s_id)
+        if cid is None:
+            cid = case_of_node.get(o_id)
+        if cid is None:
+            continue
         if ps not in rel2id:
             rel2id[ps] = len(rel2id)
-        src_list.append(ent2id[s_str])
-        dst_list.append(ent2id[o_str])
-        rel_list.append(rel2id[ps])
+        triples_by_case.setdefault(cid, []).append((s_id, o_id, rel2id[ps]))
+    return triples_by_case
 
-    ei = torch.tensor([src_list, dst_list], dtype=torch.long)
-    et = torch.tensor(rel_list, dtype=torch.long)
-    return ei, et
+
+def build_prefix_batch(pairs: List[Tuple[int, int]],
+                       case_map: Dict[str, List[int]],
+                       triples_by_case: Dict[str, List[Tuple[int, int, int]]],
+                       follows_rel: int,
+                       device):
+    """Disjoint union of one prefix subgraph per (src, dst) pair.
+
+    Each subgraph contains only the events of the case up to and including
+    src, plus their attribute nodes. Shared value nodes are duplicated per
+    subgraph, so no path exists to future events or to other prefixes.
+    Consecutive prefix events are chained with `follows_rel` edges so the
+    encoder can learn the event order.
+
+    Returns (edge_index, edge_type, node_orig, src_pos) where node_orig maps
+    each batched node to its original entity id and src_pos gives the batched
+    node of each pair's src event (aligned with `pairs`).
+    """
+    event_rank: Dict[int, Tuple[str, int]] = {}  # event node → (case, position)
+    for cid, events in case_map.items():
+        for rank, nid in enumerate(events):
+            event_rank[nid] = (cid, rank)
+
+    src_l, dst_l, rel_l = [], [], []
+    node_orig: List[int] = []
+    src_pos:   List[int] = []
+
+    for src_id, _ in pairs:
+        cid, src_rank = event_rank[src_id]
+        local: Dict[int, int] = {}
+
+        def local_id(n: int) -> int:
+            if n not in local:
+                local[n] = len(node_orig)
+                node_orig.append(n)
+            return local[n]
+
+        src_pos.append(local_id(src_id))
+        for s, o, r in triples_by_case.get(cid, []):
+            if any(n in event_rank and event_rank[n][1] > src_rank for n in (s, o)):
+                continue  # triple touches a future event
+            src_l.append(local_id(s))
+            dst_l.append(local_id(o))
+            rel_l.append(r)
+
+        prefix_events = case_map[cid][:src_rank + 1]
+        for prev, nxt in zip(prefix_events, prefix_events[1:]):
+            src_l.append(local_id(prev))
+            dst_l.append(local_id(nxt))
+            rel_l.append(follows_rel)
+
+    ei = torch.tensor([src_l, dst_l], dtype=torch.long)
+    et = torch.tensor(rel_l, dtype=torch.long)
+    return (ei, et,
+            torch.tensor(node_orig, dtype=torch.long),
+            torch.tensor(src_pos, dtype=torch.long, device=device))
 
 
 # model
@@ -191,32 +234,26 @@ def objective(trial, data, args):
     otherC_weight_factor = trial.suggest_float("otherC_weight", 0.3, 1.0)
     otherN_weight_factor = trial.suggest_float("otherN_weight", 0.1, 0.5) 
 
-    (x, ei_tr, et_tr, ei_val, et_val, num_rel,
-     train_pairs_t, val_pairs_t,
+    (x_tr, ei_tr, et_tr, src_tr,
+     x_val, ei_val, et_val, src_val,
+     num_rel, train_idx, val_idx,
      y_act, y_time, y_c, y_n,
-     n_train, device, act_weight, otherC_weights) = data
+     device, act_weight, otherC_weights) = data
 
-    n_act = int(y_act.max().item()) + 1
-
-    encoder = RGCNEncoder(x.size(1), hid_dim, hid_dim, num_rel * 2,
+    encoder = RGCNEncoder(x_tr.size(1), hid_dim, hid_dim, num_rel * 2,
                           num_bases=num_bases, dropout=dropout).to(device)
     head = _make_head(hid_dim, y_act, y_c, y_n, device, head_hidden=head_hidden)
     optimizer = torch.optim.Adam(
         list(encoder.parameters()) + list(head.parameters()), lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.optuna_epochs)
 
-    n_inner = int(0.8 * len(train_pairs_t))
-    inner_train_t = train_pairs_t[:n_inner]
-    inner_val_t   = train_pairs_t[n_inner:]
-    train_idx = torch.arange(n_inner, device=device)
-    val_idx   = torch.arange(n_inner, len(train_pairs_t), device=device)
     best_v = float("inf")
 
     for epoch in range(args.optuna_epochs):
         encoder.train(); head.train()
         optimizer.zero_grad()
-        z   = encoder(x, ei_tr, et_tr)
-        out = head(z[inner_train_t[:, 0]])
+        z   = encoder(x_tr, ei_tr, et_tr)
+        out = head(z[src_tr])
         loss = compute_loss(out, y_act, y_time, y_c, y_n, train_idx, time_weight, act_weight, otherC_weights, otherC_weight_factor, otherN_weight_factor)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(list(encoder.parameters()) + list(head.parameters()), max_norm=1.0)
@@ -224,8 +261,8 @@ def objective(trial, data, args):
 
         encoder.eval(); head.eval()
         with torch.no_grad():
-            z_v  = encoder(x, ei_tr, et_tr)
-            v_out = head(z_v[inner_val_t[:, 0]])
+            z_v  = encoder(x_val, ei_val, et_val)
+            v_out = head(z_v[src_val])
             m_act = y_act[val_idx] >= 0
             if m_act.any():
                 v_loss = F.cross_entropy(v_out["act"][m_act], y_act[val_idx][m_act], weight=act_weight)
@@ -275,51 +312,64 @@ def main():
     ent2id = load_entity2id(args.entity2id)
     id2ent = {i: e for e, i in ent2id.items()}
     x      = load_embeddings(args.emb).to(device)
-    x_cpu  = x.cpu()
 
-    train_cases, val_cases = load_case_split(args.case_split)
-    print(f"Case split loaded: {len(train_cases)} train / {len(val_cases)} val")
+    train_cases, val_cases, test_cases = load_case_split(args.case_split)
+    print(f"Case split loaded: {len(train_cases)} train / {len(val_cases)} val / {len(test_cases)} test")
 
     print("Parsing TTL …")
     g = Graph()
     g.parse(args.ttl, format="turtle")
 
-    rel2id: Dict[str, int] = {}
-    ei_tr, et_tr = build_graph(g, ent2id, rel2id, excluded_cases=val_cases)
-    num_rel = len(rel2id)
-
-    ei_val, et_val = build_graph(g, ent2id, rel2id, excluded_cases=train_cases)
-
-    ei_tr,  et_tr  = add_inverse_edges(ei_tr,  et_tr,  num_rel)
-    ei_val, et_val = add_inverse_edges(ei_val, et_val, num_rel)
-    ei_tr,  et_tr  = ei_tr.to(device),  et_tr.to(device)
-    ei_val, et_val = ei_val.to(device), et_val.to(device)
-    print(f"Train graph: {et_tr.size(0)//2} edges  |  Val graph: {et_val.size(0)//2} edges")
-
-    case_map: Dict[str, Dict[int, int]] = {}   # case_id → {event_num → node_id}
+    # event order inside a case comes from timestamps; event# only breaks ties
+    event_ts = {str(s): parse_ts(str(o)) for s, o in g.subject_objects(URIRef(P_TIME))}
+    events_by_case: Dict[str, Dict[int, Tuple[int, Optional[float]]]] = {}
     for nid, uri in id2ent.items():
         m = EVENT_RE.search(uri)
         if m:
             ev_num, cid = int(m.group(1)), m.group(2)
-            case_map.setdefault(cid, {})[ev_num] = nid
+            events_by_case.setdefault(cid, {})[ev_num] = (nid, event_ts.get(uri))
+    case_map: Dict[str, List[int]] = {   # case_id → event node ids in temporal order
+        cid: order_case_events(evs) for cid, evs in events_by_case.items()}
 
     train_pairs: List[Tuple[int,int]] = []
     val_pairs:   List[Tuple[int,int]] = []
+    test_pairs:  List[Tuple[int,int]] = []
 
-    for cid, km in case_map.items():
-        ks = sorted(km.keys())
-        case_pairs = [(km[ks[i]], km[ks[i+1]])
-                      for i in range(len(ks)-1)
-                      if ks[i]+1 in km]
+    for cid, events in case_map.items():
+        case_pairs = list(zip(events, events[1:]))
         if cid in train_cases:
             train_pairs.extend(case_pairs)
-        else:
+        elif cid in val_cases:
             val_pairs.extend(case_pairs)
+        elif cid in test_cases:
+            test_pairs.extend(case_pairs)
 
-    print(f"Pairs — train: {len(train_pairs)}  val: {len(val_pairs)}")
+    print(f"Pairs — train: {len(train_pairs)}  val: {len(val_pairs)}  test: {len(test_pairs)}")
 
-    train_pairs_t = torch.tensor(train_pairs, dtype=torch.long, device=device)
-    val_pairs_t   = torch.tensor(val_pairs,   dtype=torch.long, device=device)
+    rel2id: Dict[str, int] = {P_FOLLOWS: 0}
+    triples_by_case = collect_case_triples(g, ent2id, rel2id, case_map)
+    num_rel = len(rel2id)
+
+    print("Building prefix graphs …")
+    follows_rel = rel2id[P_FOLLOWS]
+    ei_tr,  et_tr,  nodes_tr,  src_tr  = build_prefix_batch(train_pairs, case_map, triples_by_case, follows_rel, device)
+    ei_val, et_val, nodes_val, src_val = build_prefix_batch(val_pairs,   case_map, triples_by_case, follows_rel, device)
+    ei_te,  et_te,  nodes_te,  src_te  = build_prefix_batch(test_pairs,  case_map, triples_by_case, follows_rel, device)
+
+    ei_tr,  et_tr  = add_inverse_edges(ei_tr,  et_tr,  num_rel)
+    ei_val, et_val = add_inverse_edges(ei_val, et_val, num_rel)
+    ei_te,  et_te  = add_inverse_edges(ei_te,  et_te,  num_rel)
+    ei_tr,  et_tr  = ei_tr.to(device),  et_tr.to(device)
+    ei_val, et_val = ei_val.to(device), et_val.to(device)
+    ei_te,  et_te  = ei_te.to(device),  et_te.to(device)
+
+    x_tr  = x[nodes_tr]   # node features duplicated per prefix subgraph
+    x_val = x[nodes_val]
+    x_te  = x[nodes_te]
+    print(f"Prefix batches — train: {nodes_tr.size(0)} nodes  |  "
+          f"val: {nodes_val.size(0)} nodes  |  test: {nodes_te.size(0)} nodes")
+
+    test_pairs_t = torch.tensor(test_pairs, dtype=torch.long, device=device)  # kept for the checkpoint
 
     act_vocab: Dict[str, int] = {}
     c_vocabs:  Dict[str, Dict[str, int]] = {}
@@ -348,7 +398,8 @@ def main():
 
     N_tr = len(train_pairs)
     N_val = len(val_pairs)
-    N = N_tr + N_val
+    N_te = len(test_pairs)
+    N = N_tr + N_val + N_te
 
     y_act  = torch.full((N,), -1, dtype=torch.long,  device=device)
     y_time = torch.full((N,), float("nan"),           device=device)
@@ -358,6 +409,7 @@ def main():
               for k in n_keys}
 
     _ts_cache: Dict[int, Optional[float]] = {}
+    n_negative_dt = 0
 
     def _get_ts(eid: int) -> Optional[float]:
         if eid not in _ts_cache:
@@ -365,46 +417,32 @@ def main():
             _ts_cache[eid] = parse_ts(t_str)
         return _ts_cache[eid]
 
-    for i, (src_id, dst_id) in enumerate(train_pairs):
-        a, t_str, oc, on = get_event_attrs(g, id2ent[dst_id])
-        if a in act_vocab:
-            y_act[i] = act_vocab[a]
-        ts_src = _get_ts(src_id)
-        ts_dst = parse_ts(t_str)
-        if ts_src is not None and ts_dst is not None:
-            y_time[i] = max(ts_dst - ts_src, 0.0)  
-        for k, v in oc.items():
-            sk = _sanitize(k)
-            if sk in y_c and v in c_vocabs[k]:
-                y_c[sk][i] = c_vocabs[k][v]
-        for k, v in on.items():
-            sk = _sanitize(k)
-            if sk in y_n:
-                try:
-                    y_n[sk][i] = float(v)
-                except (ValueError, TypeError):
-                    pass
+    for offset, pairs in ((0, train_pairs), (N_tr, val_pairs), (N_tr + N_val, test_pairs)):
+        for j, (src_id, dst_id) in enumerate(pairs):
+            i = offset + j
+            a, t_str, oc, on = get_event_attrs(g, id2ent[dst_id])
+            if a in act_vocab:
+                y_act[i] = act_vocab[a]
+            ts_src = _get_ts(src_id)
+            ts_dst = parse_ts(t_str)
+            if ts_src is not None and ts_dst is not None:
+                n_negative_dt += ts_dst < ts_src
+                y_time[i] = max(ts_dst - ts_src, 0.0)
+            for k, v in oc.items():
+                sk = _sanitize(k)
+                if sk in y_c and v in c_vocabs.get(k, {}):
+                    y_c[sk][i] = c_vocabs[k][v]
+            for k, v in on.items():
+                sk = _sanitize(k)
+                if sk in y_n:
+                    try:
+                        y_n[sk][i] = float(v)
+                    except (ValueError, TypeError):
+                        pass
 
-    for j, (src_id, dst_id) in enumerate(val_pairs):
-        i = N_tr + j
-        a, t_str, oc, on = get_event_attrs(g, id2ent[dst_id])
-        if a in act_vocab:
-            y_act[i] = act_vocab[a]
-        ts_src = _get_ts(src_id)
-        ts_dst = parse_ts(t_str)
-        if ts_src is not None and ts_dst is not None:
-            y_time[i] = max(ts_dst - ts_src, 0.0)   
-        for k, v in oc.items():
-            sk = _sanitize(k)
-            if sk in y_c and v in c_vocabs.get(k, {}):
-                y_c[sk][i] = c_vocabs[k][v]
-        for k, v in on.items():
-            sk = _sanitize(k)
-            if sk in y_n:
-                try:
-                    y_n[sk][i] = float(v)
-                except (ValueError, TypeError):
-                    pass
+    if n_negative_dt:
+        print(f"WARNING: {n_negative_dt} pairs have dst before src in time; "
+              f"event order is not temporal")
 
     y_time = torch.log1p(torch.clamp(y_time, min=0.0))
 
@@ -441,14 +479,7 @@ def main():
     print(f"Saved vocabs/norm → {vocabs_path}")
 
 
-    def output_pairs_info(pairs, split_name, N_offset, out_path, edge_index, edge_type):
-        edge_dict = {}  # {(src, dst): [rel_ids]} 
-        for edge_idx, rel_id in enumerate(edge_type):
-            src, dst = int(edge_index[0, edge_idx].item()), int(edge_index[1, edge_idx].item())
-            if (src, dst) not in edge_dict:
-                edge_dict[(src, dst)] = []
-            edge_dict[(src, dst)].append(int(rel_id.item()))
-        
+    def output_pairs_info(pairs, N_offset, out_path):
         with open(out_path, "w", encoding="utf-8") as f:
             for i, (src_id, dst_id) in enumerate(pairs):
                 idx = N_offset + i
@@ -456,19 +487,13 @@ def main():
                 src_uri = id2ent[src_id]
                 dst_uri = id2ent[dst_id]
                 a, t_str, oc, on = get_event_attrs(g, dst_uri)
-                
-                src_emb = x_cpu[src_id].tolist()
-                dst_emb = x_cpu[dst_id].tolist()
-                
-                pair_edges = edge_dict.get((src_id, dst_id), [])
-                
+
                 entry = {
                     "pair_idx": i,
                     "src_id": src_id,
                     "dst_id": dst_id,
                     "src_uri": src_uri,
                     "dst_uri": dst_uri,
-                    "direct_edges_rel_ids": pair_edges,
                     "activity": a,
                     "timestamp_str": t_str,
                     "otherC": oc,
@@ -482,10 +507,13 @@ def main():
 
     train_info_path = os.path.splitext(args.save_best_val)[0] + "_train_info.jsonl"
     val_info_path   = os.path.splitext(args.save_best_val)[0] + "_val_info.jsonl"
-    output_pairs_info(train_pairs, "train", 0, train_info_path, ei_tr, et_tr)
-    output_pairs_info(val_pairs, "val", N_tr, val_info_path, ei_val, et_val)
+    test_info_path  = os.path.splitext(args.save_best_val)[0] + "_test_info.jsonl"
+    output_pairs_info(train_pairs, 0, train_info_path)
+    output_pairs_info(val_pairs, N_tr, val_info_path)
+    output_pairs_info(test_pairs, N_tr + N_val, test_info_path)
     print(f"Wrote all training info to {train_info_path}")
     print(f"Wrote all validation info to {val_info_path}")
+    print(f"Wrote all test info to {test_info_path}")
 
 
     train_act = y_act[:N_tr]
@@ -508,11 +536,16 @@ def main():
             otherC_weights[k] = None
     print(f"Computed class weights for {len(otherC_weights)} categorical attributes")
 
-    # optuna study
-    data_bundle = (x, ei_tr, et_tr, ei_val, et_val, num_rel,
-                   train_pairs_t, val_pairs_t,
+    train_idx = torch.arange(N_tr,                device=device)
+    val_idx   = torch.arange(N_tr, N_tr + N_val,  device=device)
+    test_idx  = torch.arange(N_tr + N_val, N,     device=device)
+
+    # optuna validates on the real val set; test is never touched here
+    data_bundle = (x_tr, ei_tr, et_tr, src_tr,
+                   x_val, ei_val, et_val, src_val,
+                   num_rel, train_idx, val_idx,
                    y_act, y_time, y_c, y_n,
-                   N_tr, device, act_weight, otherC_weights)
+                   device, act_weight, otherC_weights)
 
     study = optuna.create_study(direction="minimize",
                                 pruner=optuna.pruners.PercentilePruner(
@@ -526,7 +559,7 @@ def main():
 
     best   = study.best_params
     hid    = best["hid_dim"]
-    encoder = RGCNEncoder(x.size(1), hid, hid, num_rel * 2,
+    encoder = RGCNEncoder(x_tr.size(1), hid, hid, num_rel * 2,
                           num_bases=best["num_bases"],
                           dropout=best["dropout"]).to(device)
     head   = _make_head(hid, y_act, y_c, y_n, device, head_hidden=best["head_hidden"])
@@ -539,16 +572,13 @@ def main():
     otherC_weight_factor = best["otherC_weight"]
     otherN_weight_factor = best["otherN_weight"]
 
-    train_idx = torch.arange(N_tr,        device=device)
-    val_idx   = torch.arange(N_tr, N,     device=device)
-
     best_v = float("inf")
     no_improve = 0
     for epoch in range(args.epochs):
         encoder.train(); head.train()
         opt.zero_grad()
-        z   = encoder(x, ei_tr, et_tr)
-        out = head(z[train_pairs_t[:, 0]])
+        z   = encoder(x_tr, ei_tr, et_tr)
+        out = head(z[src_tr])
         loss = compute_loss(out, y_act, y_time, y_c, y_n, train_idx, time_weight, act_weight, otherC_weights, otherC_weight_factor, otherN_weight_factor)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(list(encoder.parameters()) + list(head.parameters()), max_norm=1.0)
@@ -556,8 +586,8 @@ def main():
 
         encoder.eval(); head.eval()
         with torch.no_grad():
-            z_v   = encoder(x, ei_val, et_val)
-            v_out = head(z_v[val_pairs_t[:, 0]])
+            z_v   = encoder(x_val, ei_val, et_val)
+            v_out = head(z_v[src_val])
             m_act = y_act[val_idx] >= 0
             v_loss = (F.cross_entropy(v_out["act"][m_act], y_act[val_idx][m_act], weight=act_weight)
                       if m_act.any() else torch.tensor(float("inf")))
@@ -569,18 +599,22 @@ def main():
         if v_loss.item() < best_v:
             best_v = v_loss.item()
             no_improve = 0
+            # test predictions stored only for offline evaluation; never used for selection
+            with torch.no_grad():
+                z_te  = encoder(x_te, ei_te, et_te)
+                t_out = head(z_te[src_te])
             torch.save({
-                "y_act":    y_act[val_idx],
-                "y_time":   y_time[val_idx],
-                "y_otherC": {k: y_c[k][val_idx] for k in y_c},
-                "y_otherN": {k: y_n[k][val_idx] for k in y_n},
+                "y_act":    y_act[test_idx],
+                "y_time":   y_time[test_idx],
+                "y_otherC": {k: y_c[k][test_idx] for k in y_c},
+                "y_otherN": {k: y_n[k][test_idx] for k in y_n},
                 "pred": {
-                    "act_logits":    v_out["act"],
-                    "time_pred_log": v_out["time"],
-                    "otherC_logits": v_out["otherC"],
-                    "otherN_pred":   v_out["otherN"],
+                    "act_logits":    t_out["act"],
+                    "time_pred_log": t_out["time"],
+                    "otherC_logits": t_out["otherC"],
+                    "otherN_pred":   t_out["otherN"],
                 },
-                "pairs_val": val_pairs_t,
+                "pairs_val": test_pairs_t,
             }, args.save_best_val)
             print(f"Epoch {epoch:4d}  val_loss={v_loss.item():.4f}  ← saved")
         else:

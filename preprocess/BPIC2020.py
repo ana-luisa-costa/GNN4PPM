@@ -187,6 +187,10 @@ for i, df in enumerate(datasets):
     print(f"\nMissing values in challenge_{i+1}:")
     print(df.isna().sum())
 
+    # eventIDs encode the position within a case, so rows must be in time order
+    df.sort_values(["caseID_case_concept_name", "event_timestamp_time_timestamp"],
+                   kind="stable", inplace=True)
+    df.reset_index(drop=True, inplace=True)
     df.insert(0, "eventID", (df.groupby("caseID_case_concept_name").cumcount() + 1).astype(str) + "_" + df["caseID_case_concept_name"].astype(str))
     df.to_csv(outputpath + filenames[i], index=False)
 
