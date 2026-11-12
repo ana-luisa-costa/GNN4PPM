@@ -8,8 +8,8 @@ import numpy as np
 from rdflib import Graph
 from gensim.models import Word2Vec
 
-from src.utils.uri_helpers import EVENT_RE, P_TIME, parse_ts, order_case_events
-from src.utils.io_helpers import load_temporal_case_split_from_csv
+from src.utils.uri_helpers import EVENT_RE, P_TIME, parse_ts, order_case_events, usable_event_uris
+from src.utils.io_helpers import load_temporal_case_split_from_csv, load_case_window_end
 
 SKIPPED_PREDICATE_PARTS = (
     "rdf-schema", "#type", "/type", "directlyFollows", "contains",
@@ -26,13 +26,13 @@ def is_token_predicate(predicate):
     return not any(part in predicate for part in SKIPPED_PREDICATE_PARTS)
 
 
-def collect_case_events(g):
-    """Map case id → events in temporal order, each as (uri, attribute tokens)."""
+def collect_case_events(g, usable):
+    """Map case id → usable events in temporal order, each as (uri, attribute tokens)."""
     by_case = {}
     timestamps = {}
     for s, p, o in g:
         match = EVENT_RE.search(str(s))
-        if not match:
+        if not match or str(s) not in usable:
             continue
         p_str = str(p)
         if p_str == P_TIME:
@@ -104,8 +104,8 @@ def pool_event_vector(wv, past_events, decay):
 
 
 def build_embeddings(g, wv, case_events, max_events, decay):
-    """One vector per entity: token vector for attribute values, pooled past
-    for events, vocabulary mean for the rest (cases, timestamps, unseen)."""
+    """One vector per entity: pooled past for events, the token vector for
+    attribute values, and the vocabulary mean for the rest (cases, unseen)."""
     all_entities = build_full_entity_set(g)
     entity2id = {ent: i for i, ent in enumerate(all_entities)}
 
@@ -153,14 +153,15 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     t_total = time.time()
 
-    train_cases, val_cases, test_cases = load_temporal_case_split_from_csv(
+    train_cases, val_cases, test_cases, window_end = load_temporal_case_split_from_csv(
         args.csv, args.train_ratio, args.val_ratio)
 
     split_path = os.path.join(args.out, "case_split.json")
     with open(split_path, "w", encoding="utf-8") as f:
         json.dump({"train": sorted(train_cases),
                    "val": sorted(val_cases),
-                   "test": sorted(test_cases)}, f, indent=2)
+                   "test": sorted(test_cases),
+                   "window_end": window_end}, f, indent=2)
     print(f"Saved case split → {split_path}")
 
     print(f"Loading {args.ttl} ...")
@@ -168,7 +169,7 @@ def main():
     g = read_graph(args.ttl)
     print(f"  Graph loaded  [{time.time() - t0:.1f}s]")
 
-    case_events = collect_case_events(g)
+    case_events = collect_case_events(g, usable_event_uris(g, load_case_window_end(split_path)))
 
     t0 = time.time()
     walks = generate_walks(case_events, train_cases, args.num_walks,

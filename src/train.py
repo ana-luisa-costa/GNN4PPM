@@ -1,6 +1,8 @@
 import json
+import math
 import os
 import argparse
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple, Optional
 
 import torch
@@ -10,12 +12,24 @@ import optuna
 from rdflib import Graph, URIRef
 from torch_geometric.nn import RGCNConv
 
-from src.utils.uri_helpers import EVENT_RE, P_TIME, parse_ts, order_case_events
-from src.utils.io_helpers import load_entity2id, load_embeddings, load_case_split
+from src.utils.uri_helpers import CASE_URI, EVENT_RE, P_TIME, parse_ts, order_case_events, usable_event_uris
+from src.utils.io_helpers import load_entity2id, load_embeddings, load_case_split, load_case_window_end
 
 
 P_ACT  = "http://example.org/hasevent_activity_concept_name"
 P_FOLLOWS = "http://example.org/eventDirectlyFollows"  
+UNK = "<UNK>"  # class of a missing or train-unseen categorical value
+
+# The only case attributes used as features: both are recorded when the case
+# starts, so every prefix may see them. The BPIC20 ones change during a case
+# and for the BPIC13 ones it is unknown when they are recorded.
+P_AMOUNT_REQ = "http://example.org/hascase_otherN_case_AMOUNT_REQ"
+P_REG_DATE   = "http://example.org/hascase_otherN_case_REG_DATE"
+
+NAN = float("nan")
+TIME_COLUMNS = slice(0, 4)  # filled for event nodes
+CASE_COLUMNS = slice(4, 6)  # filled for case nodes
+N_NODE_FEATURES = 6
 
 
 def get_event_attrs(g, event_uri: str):
@@ -45,8 +59,8 @@ def collect_case_triples(g, ent2id: Dict[str, int], rel2id: Dict[str, int],
                          case_map: Dict[str, List[int]]):
     """Group triples by case, keeping only those that touch an event node.
 
-    Value-to-value triples (e.g. directlyFollows between shared attribute
-    nodes) are dropped: they connect events across cases and across time.
+    Value-to-value triples (e.g. directlyFollows between shared attribute nodes)
+    are dropped: they would connect events across cases and across time.
     """
     case_of_node = {nid: cid for cid, events in case_map.items() for nid in events}
 
@@ -54,6 +68,8 @@ def collect_case_triples(g, ent2id: Dict[str, int], rel2id: Dict[str, int],
     for s, p, o in g:
         ps = str(p)
         if "rdf-schema" in ps or ps.endswith("#type"):
+            continue
+        if ps == P_TIME:  # time is a feature of the event node, not a node
             continue
         s_str, o_str = str(s), str(o)
         if s_str not in ent2id or o_str not in ent2id:
@@ -77,15 +93,14 @@ def build_prefix_batch(pairs: List[Tuple[int, int]],
                        device):
     """Disjoint union of one prefix subgraph per (src, dst) pair.
 
-    Each subgraph contains only the events of the case up to and including
-    src, plus their attribute nodes. Shared value nodes are duplicated per
-    subgraph, so no path exists to future events or to other prefixes.
-    Consecutive prefix events are chained with `follows_rel` edges so the
-    encoder can learn the event order.
+    Each subgraph holds only the case's events up to and including src plus
+    their attribute nodes; shared value nodes are duplicated per subgraph, so no
+    path reaches a future event or another prefix. Consecutive prefix events are
+    chained with follows_rel so the encoder can learn the event order.
 
-    Returns (edge_index, edge_type, node_orig, src_pos) where node_orig maps
+    Returns (edge_index, edge_type, node_orig, src_pos), where node_orig maps
     each batched node to its original entity id and src_pos gives the batched
-    node of each pair's src event (aligned with `pairs`).
+    node of each pair's src event (aligned with pairs).
     """
     event_rank: Dict[int, Tuple[str, int]] = {}  # event node → (case, position)
     for cid, events in case_map.items():
@@ -109,7 +124,7 @@ def build_prefix_batch(pairs: List[Tuple[int, int]],
         src_pos.append(local_id(src_id))
         for s, o, r in triples_by_case.get(cid, []):
             if any(n in event_rank and event_rank[n][1] > src_rank for n in (s, o)):
-                continue  # triple touches a future event
+                continue
             src_l.append(local_id(s))
             dst_l.append(local_id(o))
             rel_l.append(r)
@@ -125,6 +140,67 @@ def build_prefix_batch(pairs: List[Tuple[int, int]],
     return (ei, et,
             torch.tensor(node_orig, dtype=torch.long),
             torch.tensor(src_pos, dtype=torch.long, device=device))
+
+
+# node features
+
+def log_seconds(later: Optional[float], earlier: Optional[float]) -> float:
+    """log1p of the seconds from `earlier` to `later`; NaN if either is unknown."""
+    if later is None or earlier is None:
+        return NAN
+    if later < earlier:
+        raise ValueError("A feature may only look back in time.")
+    return math.log1p(later - earlier)
+
+
+def event_time_features(ts: Optional[float], previous_ts: Optional[float],
+                        case_start: Optional[float]) -> List[float]:
+    """[log seconds since the previous event, log seconds since the first event,
+    hour of day, weekday] of an event."""
+    if ts is None:
+        return [NAN] * 4
+    moment = datetime.fromtimestamp(ts, tz=timezone.utc)
+    return [log_seconds(ts, previous_ts), log_seconds(ts, case_start),
+            moment.hour, moment.weekday()]
+
+
+def case_start_features(g, case_uri: str, case_start: Optional[float]) -> List[float]:
+    """[log requested amount, log seconds from registration to the first event]."""
+    case = URIRef(case_uri)
+    # any=False raises on several values: such an attribute changes during the
+    # case, so an early prefix would see a value that is only recorded later
+    amount = g.value(case, URIRef(P_AMOUNT_REQ), any=False)
+    registered = g.value(case, URIRef(P_REG_DATE), any=False)
+    return [NAN if amount is None else math.log1p(float(amount)),
+            log_seconds(case_start, parse_ts(registered))]
+
+
+def build_node_features(g, ent2id: Dict[str, int], case_map: Dict[str, List[int]],
+                        event_ts: Dict[str, Optional[float]]) -> torch.Tensor:
+    """Numeric features per node, NaN where a feature does not apply.
+
+    A row only uses what is known when its node first enters a prefix graph
+    (the event itself, its predecessors and the case start), so every prefix
+    graph containing the node shares the row.
+    """
+    node_ts = {ent2id[uri]: ts for uri, ts in event_ts.items()}
+    features = [[NAN] * N_NODE_FEATURES for _ in ent2id]
+    for cid, events in case_map.items():
+        timestamps = [node_ts.get(event) for event in events]
+        previous = timestamps[:1] + timestamps  # the first event has no gap
+        for event, ts, previous_ts in zip(events, timestamps, previous):
+            features[event][TIME_COLUMNS] = event_time_features(ts, previous_ts, timestamps[0])
+        case_uri = CASE_URI.format(cid)
+        features[ent2id[case_uri]][CASE_COLUMNS] = case_start_features(g, case_uri, timestamps[0])
+    return torch.tensor(features)
+
+
+def standardize(features: torch.Tensor, fit_nodes: torch.Tensor) -> torch.Tensor:
+    """Scale each column with its mean/std over `fit_nodes`; NaN becomes 0."""
+    fit = features[fit_nodes]
+    mean = fit.nanmean(dim=0)
+    std = (fit - mean).pow(2).nanmean(dim=0).sqrt().clamp(min=1e-6)
+    return torch.nan_to_num((features - mean) / std)
 
 
 # model
@@ -320,12 +396,14 @@ def main():
     g = Graph()
     g.parse(args.ttl, format="turtle")
 
+    usable = usable_event_uris(g, load_case_window_end(args.case_split))
+
     # event order inside a case comes from timestamps; event# only breaks ties
     event_ts = {str(s): parse_ts(str(o)) for s, o in g.subject_objects(URIRef(P_TIME))}
     events_by_case: Dict[str, Dict[int, Tuple[int, Optional[float]]]] = {}
     for nid, uri in id2ent.items():
         m = EVENT_RE.search(uri)
-        if m:
+        if m and uri in usable:
             ev_num, cid = int(m.group(1)), m.group(2)
             events_by_case.setdefault(cid, {})[ev_num] = (nid, event_ts.get(uri))
     case_map: Dict[str, List[int]] = {   # case_id → event node ids in temporal order
@@ -363,6 +441,11 @@ def main():
     ei_val, et_val = ei_val.to(device), et_val.to(device)
     ei_te,  et_te  = ei_te.to(device),  et_te.to(device)
 
+    # scaled with the nodes of the train prefixes only: no val/test statistics
+    node_features = standardize(build_node_features(g, ent2id, case_map, event_ts),
+                                fit_nodes=nodes_tr.unique())
+    x = torch.cat([x, node_features.to(device)], dim=1)
+
     x_tr  = x[nodes_tr]   # node features duplicated per prefix subgraph
     x_val = x[nodes_val]
     x_te  = x[nodes_te]
@@ -371,7 +454,7 @@ def main():
 
     test_pairs_t = torch.tensor(test_pairs, dtype=torch.long, device=device)  # kept for the checkpoint
 
-    act_vocab: Dict[str, int] = {}
+    act_vocab: Dict[str, int] = {UNK: 0}
     c_vocabs:  Dict[str, Dict[str, int]] = {}
     n_keys:    set = set()
 
@@ -381,7 +464,7 @@ def main():
             act_vocab[a] = len(act_vocab)
         for k, v in oc.items():
             if k not in c_vocabs:
-                c_vocabs[k] = {}
+                c_vocabs[k] = {UNK: 0}
             if v not in c_vocabs[k]:
                 c_vocabs[k][v] = len(c_vocabs[k])
         n_keys.update(on.keys())
@@ -421,17 +504,14 @@ def main():
         for j, (src_id, dst_id) in enumerate(pairs):
             i = offset + j
             a, t_str, oc, on = get_event_attrs(g, id2ent[dst_id])
-            if a in act_vocab:
-                y_act[i] = act_vocab[a]
+            y_act[i] = act_vocab.get(a, act_vocab[UNK])
             ts_src = _get_ts(src_id)
             ts_dst = parse_ts(t_str)
             if ts_src is not None and ts_dst is not None:
                 n_negative_dt += ts_dst < ts_src
                 y_time[i] = max(ts_dst - ts_src, 0.0)
-            for k, v in oc.items():
-                sk = _sanitize(k)
-                if sk in y_c and v in c_vocabs.get(k, {}):
-                    y_c[sk][i] = c_vocabs[k][v]
+            for k, vocab in c_vocabs.items():
+                y_c[_sanitize(k)][i] = vocab.get(oc.get(k), vocab[UNK])
             for k, v in on.items():
                 sk = _sanitize(k)
                 if sk in y_n:
