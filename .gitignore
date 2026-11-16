@@ -9,6 +9,7 @@ __pycache__/
 
 # data & outputs
 data/
+gpu_logs/
 data_original/
 data_second/
 data.zip
