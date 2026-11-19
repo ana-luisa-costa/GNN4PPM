@@ -21,7 +21,7 @@ time python3 -u src/train_2.py \
   --ttl data/raw/BPIC13_O/BPIC13_OpenProblems.ttl \
   --emb data/raw/BPIC13_O/entity_embeddings.npy \
   --entity2id data/raw/BPIC13_O/entity2id.json \
-  --case_split data/raw/BPIC13_O/case_split.json \
+  --temporal_split data/raw/BPIC13_O/temporal_split.json \
   --save_best_val data/processed/BPIC13_O/best_val.pt
 
 echo "END: $(date)"

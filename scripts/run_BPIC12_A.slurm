@@ -34,7 +34,7 @@ python3 -u src/train.py \
   --ttl $RAW/$NAME.ttl \
   --emb $RAW/entity_embeddings.npy \
   --entity2id $RAW/entity2id.json \
-  --case_split $RAW/case_split.json \
+  --temporal_split $RAW/temporal_split.json \
   --save_best_val $PROC/best_val.pt
 
 echo "=== [3/3] Evaluate ==="

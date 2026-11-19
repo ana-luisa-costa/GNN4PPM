@@ -58,13 +58,16 @@ def event_signature(g, event_uri: str) -> frozenset:
                      if not any(part in str(p) for part in IDENTIFIER_PREDICATE_PARTS))
 
 
-def usable_event_uris(g, window_end: Dict[str, float]) -> Set[str]:
+def event_timestamps(g) -> Dict[str, Optional[float]]:
+    return {str(s): parse_ts(str(o)) for s, o in g.subject_objects(URIRef(P_TIME))}
+
+
+def usable_event_uris(g) -> Set[str]:
     """Events every pipeline stage may use, shared so all stages agree.
 
-    An event is dropped if it is not strictly before the end of its case's
-    window, or if an earlier event of the case has the same signature (a
-    duplicate). Both decisions only look at the event and earlier events, so
-    a prefix never depends on later events.
+    An event is dropped if it has no timestamp or if an earlier event of its
+    case has the same signature (a duplicate). Both decisions only look at the
+    event and earlier events, so a prefix never depends on later events.
     """
     events_by_case: Dict[str, Dict[int, Tuple[Tuple[str, Optional[float]], Optional[float]]]] = {}
     for s, o in g.subject_objects(URIRef(P_TIME)):
@@ -75,10 +78,9 @@ def usable_event_uris(g, window_end: Dict[str, float]) -> Set[str]:
 
     usable = set()
     for case_id, events in events_by_case.items():
-        end = window_end.get(case_id)
         seen = set()
         for uri, ts in order_case_events(events):
-            if end is None or ts is None or ts >= end:
+            if ts is None:
                 continue
             signature = event_signature(g, uri)
             if signature not in seen:

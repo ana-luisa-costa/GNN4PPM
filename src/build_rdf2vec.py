@@ -8,8 +8,8 @@ import numpy as np
 from rdflib import Graph
 from gensim.models import Word2Vec
 
-from src.utils.uri_helpers import EVENT_RE, P_TIME, parse_ts, order_case_events, usable_event_uris
-from src.utils.io_helpers import load_temporal_case_split_from_csv, load_case_window_end
+from src.utils.uri_helpers import EVENT_RE, P_TIME, parse_ts, order_case_events, usable_event_uris, event_timestamps
+from src.utils.io_helpers import load_temporal_boundaries_from_csv
 
 SKIPPED_PREDICATE_PARTS = (
     "rdf-schema", "#type", "/type", "directlyFollows", "contains",
@@ -65,10 +65,10 @@ def event_walk(tokens, token_drop):
     return walk
 
 
-def generate_walks(case_events, case_ids, num_walks, token_drop):
+def generate_walks(case_events, num_walks, token_drop):
     walks = []
-    for case_id in case_ids:
-        for _, tokens in case_events.get(case_id, []):
+    for events in case_events.values():
+        for _, tokens in events:
             for _ in range(num_walks):
                 walk = event_walk(tokens, token_drop)
                 if len(walk) > 1:
@@ -153,28 +153,28 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     t_total = time.time()
 
-    train_cases, val_cases, test_cases, window_end = load_temporal_case_split_from_csv(
-        args.csv, args.train_ratio, args.val_ratio)
+    t1, t2 = load_temporal_boundaries_from_csv(args.csv, args.train_ratio, args.val_ratio)
 
-    split_path = os.path.join(args.out, "case_split.json")
+    split_path = os.path.join(args.out, "temporal_split.json")
     with open(split_path, "w", encoding="utf-8") as f:
-        json.dump({"train": sorted(train_cases),
-                   "val": sorted(val_cases),
-                   "test": sorted(test_cases),
-                   "window_end": window_end}, f, indent=2)
-    print(f"Saved case split → {split_path}")
+        json.dump({"t1": t1, "t2": t2}, f, indent=2)
+    print(f"Saved temporal split → {split_path}")
 
     print(f"Loading {args.ttl} ...")
     t0 = time.time()
     g = read_graph(args.ttl)
     print(f"  Graph loaded  [{time.time() - t0:.1f}s]")
 
-    case_events = collect_case_events(g, usable_event_uris(g, load_case_window_end(split_path)))
+    usable = usable_event_uris(g)
+    case_events = collect_case_events(g, usable)
+
+    # walks only use events before t1, so RDF2Vec never sees val or test events
+    timestamps = event_timestamps(g)
+    train_case_events = collect_case_events(g, {uri for uri in usable if timestamps[uri] < t1})
 
     t0 = time.time()
-    walks = generate_walks(case_events, train_cases, args.num_walks,
-                           args.token_drop)
-    print(f"Generated {len(walks)} walks from {len(train_cases)} train cases  "
+    walks = generate_walks(train_case_events, args.num_walks, args.token_drop)
+    print(f"Generated {len(walks)} walks from training-window events  "
           f"[{time.time() - t0:.1f}s]")
 
     t0 = time.time()

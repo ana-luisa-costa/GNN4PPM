@@ -12,8 +12,8 @@ import optuna
 from rdflib import Graph, URIRef
 from torch_geometric.nn import RGCNConv
 
-from src.utils.uri_helpers import CASE_URI, EVENT_RE, P_TIME, parse_ts, order_case_events, usable_event_uris
-from src.utils.io_helpers import load_entity2id, load_embeddings, load_case_split, load_case_window_end
+from src.utils.uri_helpers import CASE_URI, EVENT_RE, P_TIME, parse_ts, order_case_events, usable_event_uris, event_timestamps
+from src.utils.io_helpers import load_entity2id, load_embeddings, load_temporal_boundaries
 
 
 P_ACT  = "http://example.org/hasevent_activity_concept_name"
@@ -371,7 +371,7 @@ def main():
     ap.add_argument("--ttl",          required=True)
     ap.add_argument("--emb",          required=True, help="entity_embeddings.npy")
     ap.add_argument("--entity2id",    required=True, help="entity2id.json")
-    ap.add_argument("--case_split",   required=True, help="case_split.json from build_rdf2vec_2.py")
+    ap.add_argument("--temporal_split", required=True, help="temporal_split.json from build_rdf2vec.py")
     ap.add_argument("--save_best_val",required=True)
     ap.add_argument("--vocabs_out",   default=None,  help="Path to save vocabs.json (for evaluate).")
     ap.add_argument("--epochs",        type=int, default=200,
@@ -389,17 +389,17 @@ def main():
     id2ent = {i: e for e, i in ent2id.items()}
     x      = load_embeddings(args.emb).to(device)
 
-    train_cases, val_cases, test_cases = load_case_split(args.case_split)
-    print(f"Case split loaded: {len(train_cases)} train / {len(val_cases)} val / {len(test_cases)} test")
+    t1, t2 = load_temporal_boundaries(args.temporal_split)
+    print(f"Temporal boundaries: t1={t1}  t2={t2}")
 
     print("Parsing TTL …")
     g = Graph()
     g.parse(args.ttl, format="turtle")
 
-    usable = usable_event_uris(g, load_case_window_end(args.case_split))
+    usable = usable_event_uris(g)
 
     # event order inside a case comes from timestamps; event# only breaks ties
-    event_ts = {str(s): parse_ts(str(o)) for s, o in g.subject_objects(URIRef(P_TIME))}
+    event_ts = event_timestamps(g)
     events_by_case: Dict[str, Dict[int, Tuple[int, Optional[float]]]] = {}
     for nid, uri in id2ent.items():
         m = EVENT_RE.search(uri)
@@ -414,13 +414,14 @@ def main():
     test_pairs:  List[Tuple[int,int]] = []
 
     for cid, events in case_map.items():
-        case_pairs = list(zip(events, events[1:]))
-        if cid in train_cases:
-            train_pairs.extend(case_pairs)
-        elif cid in val_cases:
-            val_pairs.extend(case_pairs)
-        elif cid in test_cases:
-            test_pairs.extend(case_pairs)
+        for src_id, dst_id in zip(events, events[1:]):
+            ts = event_ts[id2ent[dst_id]]  # each pair is assigned by its target's time
+            if ts < t1:
+                train_pairs.append((src_id, dst_id))
+            elif ts < t2:
+                val_pairs.append((src_id, dst_id))
+            else:
+                test_pairs.append((src_id, dst_id))
 
     print(f"Pairs — train: {len(train_pairs)}  val: {len(val_pairs)}  test: {len(test_pairs)}")
 

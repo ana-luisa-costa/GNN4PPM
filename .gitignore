@@ -8,10 +8,12 @@ __pycache__/
 *.pyc
 
 # data & outputs
+README.md
 data/
 gpu_logs/
 data_original/
 data_second/
+data_third/
 data.zip
 *.pt
 *.pth
