@@ -8,9 +8,11 @@
 #SBATCH --output=logs/%x-%j.out
 
 set -euo pipefail
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-cd ~/RGCN4PPM
-source venv/bin/activate
+cd ~/GNN4PPM
+source myenv/bin/activate
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
