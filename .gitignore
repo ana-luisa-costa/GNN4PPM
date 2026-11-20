@@ -10,6 +10,7 @@ __pycache__/
 # data & outputs
 README.md
 data/
+data_fourth/
 gpu_logs/
 data_original/
 data_second/

@@ -298,17 +298,20 @@ def compute_loss(out, y_act, y_time, y_c, y_n, idx, time_weight, act_weight=None
     return loss
 
 
-# optuna
+def minmaxnorm(x: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor) -> torch.Tensor:
+    return (x - lo) / (hi - lo).clamp_min(1e-8)
 
+
+# optuna
+time_w = 0.2
 def objective(trial, data, args):
     hid_dim    = trial.suggest_categorical("hid_dim", [64, 128, 256])
     lr         = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
     num_bases  = trial.suggest_int("num_bases", 10, 50)
     dropout    = trial.suggest_float("dropout", 0.2, 0.5)
-    time_weight = trial.suggest_float("time_weight", 0.1, 1.0)
     head_hidden = trial.suggest_categorical("head_hidden", [64, 128, 256])
     otherC_weight_factor = trial.suggest_float("otherC_weight", 0.3, 1.0)
-    otherN_weight_factor = trial.suggest_float("otherN_weight", 0.1, 0.5) 
+    otherN_weight_factor = trial.suggest_float("otherN_weight", 0.1, 0.5)
 
     (x_tr, ei_tr, et_tr, src_tr,
      x_val, ei_val, et_val, src_val,
@@ -325,12 +328,17 @@ def objective(trial, data, args):
 
     best_v = float("inf")
 
+    # Time range from training targets only, to avoid leaking validation info
+    y_time_tr = y_time[train_idx]
+    y_time_tr = y_time_tr[torch.isfinite(y_time_tr)]
+    t_lo, t_hi = y_time_tr.min(), y_time_tr.max()
+
     for epoch in range(args.optuna_epochs):
         encoder.train(); head.train()
         optimizer.zero_grad()
         z   = encoder(x_tr, ei_tr, et_tr)
         out = head(z[src_tr])
-        loss = compute_loss(out, y_act, y_time, y_c, y_n, train_idx, time_weight, act_weight, otherC_weights, otherC_weight_factor, otherN_weight_factor)
+        loss = compute_loss(out, y_act, y_time, y_c, y_n, train_idx, time_w, act_weight, otherC_weights, otherC_weight_factor, otherN_weight_factor)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(list(encoder.parameters()) + list(head.parameters()), max_norm=1.0)
         optimizer.step()
@@ -346,7 +354,9 @@ def objective(trial, data, args):
                 v_loss = torch.tensor(float("inf"))
             m_t = torch.isfinite(y_time[val_idx])
             if m_t.any():
-                v_loss = v_loss + time_weight * F.mse_loss(v_out["time"][m_t], y_time[val_idx][m_t])
+                v_loss = v_loss + 0.2 * F.mse_loss(
+                    minmaxnorm(v_out["time"][m_t], t_lo, t_hi),
+                    minmaxnorm(y_time[val_idx][m_t], t_lo, t_hi))
 
         scheduler.step()
         trial.report(v_loss.item(), epoch)
@@ -421,7 +431,10 @@ def main():
             elif ts < t2:
                 val_pairs.append((src_id, dst_id))
             else:
-                test_pairs.append((src_id, dst_id))
+                src_ts = event_ts[id2ent[src_id]]
+                #Test on the last timestamp on the src and dst and if its the same -> drop (of the test)
+                if src_ts != ts:
+                    test_pairs.append((src_id, dst_id))
 
     print(f"Pairs — train: {len(train_pairs)}  val: {len(val_pairs)}  test: {len(test_pairs)}")
 
@@ -649,7 +662,7 @@ def main():
         lr=best["lr"],
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
-    time_weight = best["time_weight"]
+    time_weight = time_w
     otherC_weight_factor = best["otherC_weight"]
     otherN_weight_factor = best["otherN_weight"]
 
